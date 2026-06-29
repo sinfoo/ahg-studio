@@ -4,6 +4,8 @@ A premium, all-in-one **screen recorder**, **video optimizer**, and **multi-trac
 
 Record your screen with system audio, trim and edit on a real timeline (transitions, keyframed motion, blend modes, text, audio mixing), then export, or shrink any recording hard with GPU-accelerated encoding, all in one app.
 
+![AHG Studio — multi-track editor](docs/screenshots/edit.png)
+
 > Windows is the primary, tested target. macOS/Linux are not yet packaged.
 
 ## Download
@@ -19,6 +21,14 @@ Prefer to build it yourself? See [Quick start](#quick-start) below.
 - **Optimize** — real compression through bundled FFmpeg (H.264 / HEVC / AV1, quality or target-size, optional downscale) with GPU encoders (NVENC / QuickSync / AMF) auto-detected, live progress, and before/after compare.
 - **Library** — a premium grid of your recordings with rename, delete, batch select, a built-in video player, and one-click import to the editor.
 - **Settings** — output folders, capture (resolution / FPS / encoder / audio), hotkeys, themes (dark / light / midnight / graphite / aurora), and startup options.
+
+## Screenshots
+
+| Record | Optimize |
+| --- | --- |
+| ![Record](docs/screenshots/record.png) | ![Optimize](docs/screenshots/optimize.png) |
+| **Library** | **Edit** |
+| ![Library](docs/screenshots/library.png) | ![Edit](docs/screenshots/edit.png) |
 
 ## Quick start
 
