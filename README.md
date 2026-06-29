@@ -6,6 +6,12 @@ Record your screen with system audio, trim and edit on a real timeline (transiti
 
 > Windows is the primary, tested target. macOS/Linux are not yet packaged.
 
+## Download
+
+**[⬇ Download the latest Windows build](https://github.com/sinfoo/ahg-studio/releases/latest)** — grab `AHG-Studio-vX.Y.Z-win-x64.zip`, extract it, and double-click `AHG Studio.exe`. No installer, FFmpeg is bundled. (Windows SmartScreen may warn on the unsigned build, click **More info → Run anyway**.)
+
+Prefer to build it yourself? See [Quick start](#quick-start) below.
+
 ## Features
 
 - **Record** — captures the screen with system audio via Electron `getDisplayMedia` (no OS picker), webcam / window / image / text sources, an OBS-style audio mixer, and configurable GPU encoders up to 144 FPS. Saved to `Videos/AHG Studio/`.
