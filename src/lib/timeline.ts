@@ -277,17 +277,6 @@ export function clipFilterCss(c: Clip): string {
   return parts.join(" ");
 }
 
-// CSS transform for a clip's geometry effects: punch-in zoom (full-frame only),
-// mirror/flip, and rotation. Returns "none" when there's nothing to apply.
-export function clipTransformCss(c: Clip, full: boolean): string {
-  const parts: string[] = [];
-  if (c.rotate) parts.push(`rotate(${c.rotate.toFixed(2)}deg)`);
-  if (full && c.zoom && c.zoom > 1) parts.push(`scale(${c.zoom.toFixed(3)})`);
-  if (c.flipH) parts.push("scaleX(-1)");
-  if (c.flipV) parts.push("scaleY(-1)");
-  return parts.length ? parts.join(" ") : "none";
-}
-
 let _id = 0;
 export const newId = (p = "c") => `${p}_${Date.now().toString(36)}_${_id++}`;
 
@@ -356,12 +345,15 @@ export function snapCandidates(p: Project, playhead: number, ignoreId?: string, 
   return out;
 }
 
-// The clip active at time t on a given track (for preview).
+// The clip active at time t on a given track (for preview). When same-track clips
+// overlap, this picks the latest-start (topmost) clip — matching clipAtFast — so
+// selection hit-testing and the compositor never reference different clips.
 export function clipAt(p: Project, trackId: string, t: number): Clip | null {
+  let best: Clip | null = null;
   for (const c of clipsOf(p, trackId)) {
-    if (t >= c.start && t < clipEnd(c)) return c;
+    if (t >= c.start && t < clipEnd(c) && (!best || c.start > best.start)) best = c;
   }
-  return null;
+  return best;
 }
 
 // Non-allocating active-clip lookup for the 60fps preview/playback hot path.

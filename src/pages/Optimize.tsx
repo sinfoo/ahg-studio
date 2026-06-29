@@ -5,12 +5,10 @@ import {
   FileVideo,
   Gauge,
   HardDrive,
-  Images,
   ListChecks,
   Pencil,
   Play,
   Sparkles,
-  SplitSquareHorizontal,
   UploadCloud,
   Volume2,
   VolumeX,
@@ -74,7 +72,6 @@ export function Optimize({ incoming }: { incoming: FileRef | null }) {
   const [queue, setQueue] = useState<QItem[]>([]);
   const [selId, setSelId] = useState<string>("");
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
-  const [optThumb, setOptThumb] = useState<string>("");
   const [over, setOver] = useState(false);
   // Multi-selection for batch optimize (marquee + ctrl/shift-click). `selId` stays
   // the previewed item; `marked` is the set the batch queue processes.
@@ -82,7 +79,8 @@ export function Optimize({ incoming }: { incoming: FileRef | null }) {
   const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const listRef = useRef<HTMLUListElement | null>(null);
   const lastClicked = useRef<string | null>(null);
-  const marqueeDrag = useRef<null | { ox: number; oy: number; base: Set<string>; moved: boolean; els: HTMLElement[]; pid: number }>(null);
+  const marqueeDrag = useRef<null | { ox: number; oy: number; base: Set<string>; items: { id: string; rect: DOMRect }[]; pid: number }>(null);
+  const marqueeRaf = useRef<number | null>(null);
   const [batch, setBatch] = useState<{ total: number; done: number } | null>(null);
   const addSourcePath = (p: string, name: string) => {
     const item: QItem = { id: p, name, sizeMb: 0, codec: "—", path: p };
@@ -114,7 +112,7 @@ export function Optimize({ incoming }: { incoming: FileRef | null }) {
       const extra = q.filter((i) => !items.some((x) => x.id === i.id) && !lib.some((f) => f.path === i.id));
       return [...extra, ...items];
     });
-    setSelId((cur) => (items.some((i) => i.id === cur) || cur ? cur : items[0]?.id ?? ""));
+    setSelId((cur) => (cur ? cur : items[0]?.id ?? ""));
   }, [lib]);
 
   useEffect(() => {
@@ -171,22 +169,24 @@ export function Optimize({ incoming }: { incoming: FileRef | null }) {
   useEffect(() => {
     studio?.detectHwEncoders?.().then(setHw).catch(() => {});
   }, []);
+  // Cancel any pending marquee frame on unmount.
+  useEffect(() => () => {
+    if (marqueeRaf.current != null) cancelAnimationFrame(marqueeRaf.current);
+  }, []);
   const hwForCodec = hw ? hw[codec] : null;
   const hwAvailable = format !== "gif" && format !== "webm" && !!hwForCodec;
   const opt = useOptimize();
   const running = opt.running;
-  const done = opt.done && !!opt.output;
+  // Scope the "done" result to the CURRENTLY-selected source so a different clip
+  // never shows another clip's optimized size / Reveal button. The store's `label`
+  // holds the source name (batch) or the output save-name (single optimize), so
+  // match either against the selected item.
+  const done = opt.done && !!opt.output && !!sel && (opt.label === sel.name || opt.label === saveName);
 
   useEffect(() => {
     setSaveName(sel ? sel.name.replace(/\.[^.]+$/, "") + "-optimized" : "");
-    setOptThumb("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selId]);
-
-  // when an optimized file lands, pull a frame for the before/after compare
-  useEffect(() => {
-    if (done && opt.output && studio) studio.generateThumb(opt.output).then((d) => d && setOptThumb(d));
-  }, [done, opt.output]);
 
   const srcMb = sel?.sizeMb ?? 0;
   const qualityFactor = 0.18 + (quality / 100) * 0.82;
@@ -297,23 +297,33 @@ export function Optimize({ incoming }: { incoming: FileRef | null }) {
     const additive = e.ctrlKey || e.metaKey || e.shiftKey;
     if (!additive) setMarked(new Set());
     (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
-    const els = listRef.current ? Array.from(listRef.current.querySelectorAll<HTMLElement>("[data-sel-id]")) : [];
-    marqueeDrag.current = { ox: e.clientX, oy: e.clientY, base: additive ? new Set(marked) : new Set(), moved: false, els, pid: e.pointerId };
+    // Cache every card's rect ONCE at drag start — they don't move during a
+    // marquee drag, so re-measuring on every pointermove was pure layout thrash.
+    const items = listRef.current
+      ? Array.from(listRef.current.querySelectorAll<HTMLElement>("[data-sel-id]"))
+          .map((node) => ({ id: node.dataset.selId, rect: node.getBoundingClientRect() }))
+          .filter((it): it is { id: string; rect: DOMRect } => !!it.id)
+      : [];
+    marqueeDrag.current = { ox: e.clientX, oy: e.clientY, base: additive ? new Set(marked) : new Set(), items, pid: e.pointerId };
   }
   function marqueeMove(e: React.PointerEvent) {
     const d = marqueeDrag.current;
     if (!d) return;
-    d.moved = true;
-    const x0 = Math.min(d.ox, e.clientX), y0 = Math.min(d.oy, e.clientY);
-    const x1 = Math.max(d.ox, e.clientX), y1 = Math.max(d.oy, e.clientY);
-    setMarquee({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
-    const hits = new Set<string>(d.base);
-    for (const el of d.els) {
-      const r = el.getBoundingClientRect();
-      const id = el.dataset.selId;
-      if (id && r.left < x1 && r.right > x0 && r.top < y1 && r.bottom > y0) hits.add(id);
-    }
-    setMarked(hits);
+    const clientX = e.clientX, clientY = e.clientY;
+    // Coalesce state updates to one per frame — pointermove fires far faster than
+    // we can usefully re-render.
+    if (marqueeRaf.current != null) return;
+    marqueeRaf.current = requestAnimationFrame(() => {
+      marqueeRaf.current = null;
+      const x0 = Math.min(d.ox, clientX), y0 = Math.min(d.oy, clientY);
+      const x1 = Math.max(d.ox, clientX), y1 = Math.max(d.oy, clientY);
+      setMarquee({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
+      const hits = new Set<string>(d.base);
+      for (const { id, rect: r } of d.items) {
+        if (r.left < x1 && r.right > x0 && r.top < y1 && r.bottom > y0) hits.add(id);
+      }
+      setMarked(hits);
+    });
   }
   function marqueeUp(e: React.PointerEvent) {
     if (marqueeDrag.current) {
@@ -322,6 +332,10 @@ export function Optimize({ incoming }: { incoming: FileRef | null }) {
       } catch {
         /* noop */
       }
+    }
+    if (marqueeRaf.current != null) {
+      cancelAnimationFrame(marqueeRaf.current);
+      marqueeRaf.current = null;
     }
     marqueeDrag.current = null;
     setMarquee(null);
@@ -715,67 +729,6 @@ function OptimizePlayer({ src }: { src: string }) {
           {muted ? <VolumeX className="h-4 w-4" strokeWidth={2} /> : <Volume2 className="h-4 w-4" strokeWidth={2} />}
         </button>
       </div>
-    </div>
-  );
-}
-
-/* ---- Before/After split (signature compare component) ---- */
-function Compare({ original, optimized, hasResult, srcMb, outMb }: { original?: string; optimized?: string; hasResult: boolean; srcMb: number; outMb: number }) {
-  const [pos, setPos] = useState(0.5);
-  const ref = useRef<HTMLDivElement>(null);
-  const dragging = useRef(false);
-
-  if (!original) {
-    return (
-      <div className="grid h-full place-items-center">
-        <div className="flex flex-col items-center gap-2 text-center">
-          <Images className="h-7 w-7 text-dim" strokeWidth={1.6} />
-          <p className="text-[13px] text-muted">Select a video to compare frames</p>
-        </div>
-      </div>
-    );
-  }
-  const rightImg = hasResult && optimized ? optimized : original;
-
-  function move(clientX: number) {
-    const r = ref.current!.getBoundingClientRect();
-    setPos(clamp((clientX - r.left) / r.width, 0, 1));
-  }
-
-  return (
-    <div className="flex h-full flex-col">
-      <div
-        ref={ref}
-        className="relative min-h-0 flex-1 cursor-ew-resize select-none overflow-hidden"
-        onPointerDown={(e) => {
-          dragging.current = true;
-          (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
-          move(e.clientX);
-        }}
-        onPointerMove={(e) => dragging.current && move(e.clientX)}
-        onPointerUp={() => (dragging.current = false)}
-      >
-        {/* optimized (right) underneath */}
-        <img src={rightImg} alt="optimized" className="absolute inset-0 h-full w-full object-contain" draggable={false} />
-        {/* original (left) clipped */}
-        <div className="absolute inset-0 overflow-hidden" style={{ width: `${pos * 100}%` }}>
-          <img src={original} alt="original" className="absolute inset-0 h-full object-contain" draggable={false} style={{ width: `${100 / Math.max(pos, 0.001)}%`, maxWidth: "none" }} />
-        </div>
-        {/* labels */}
-        <span className="absolute left-2 top-2 rounded bg-black/70 px-2 py-0.5 text-[11px] font-600 text-white">Original · {mb(srcMb)}</span>
-        <span className="absolute right-2 top-2 rounded bg-accent/90 px-2 py-0.5 text-[11px] font-600 text-[var(--on-accent)]">{hasResult ? "Optimized" : "Estimated"} · {mb(outMb)}</span>
-        {/* divider */}
-        <div className="pointer-events-none absolute top-0 z-10 h-full w-0.5 -translate-x-1/2 bg-white shadow" style={{ left: `${pos * 100}%` }}>
-          <div className="absolute top-1/2 left-1/2 grid h-7 w-7 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full bg-white text-black shadow">
-            <SplitSquareHorizontal className="h-4 w-4" strokeWidth={2.4} />
-          </div>
-        </div>
-      </div>
-      {!hasResult && (
-        <div className="shrink-0 border-t border-line/60 bg-panel/50 px-3 py-2 text-center text-[11.5px] text-dim">
-          Showing original on both sides. Run Optimize to compare against the encoded frame.
-        </div>
-      )}
     </div>
   );
 }

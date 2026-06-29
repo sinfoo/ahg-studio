@@ -1,6 +1,6 @@
 import { motion } from "framer-motion";
 import { Check, Pipette } from "lucide-react";
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cx } from "../lib/format";
 
 /* ============================================================================
@@ -425,7 +425,7 @@ export function ColorPopover({
               type="number"
               min={0}
               max={255}
-              value={rgb[ch]}
+              value={Math.round(rgb[ch])}
               onChange={(e) => setChannel(ch, e.target.value)}
               aria-label={`${ch.toUpperCase()} channel`}
               className="focus-ring h-7 w-full min-w-0 rounded-md border border-line bg-panel2 px-1.5 text-center font-mono text-[11.5px] tnum text-ink transition-colors hover:bg-hover"

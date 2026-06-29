@@ -83,7 +83,6 @@ contextBridge.exposeInMainWorld("studio", {
   filmstrip: (p) => ipcRenderer.invoke("edit:filmstrip", p),
   waveform: (p) => ipcRenderer.invoke("edit:waveform", p),
 
-  editExport: (input, segments, opts) => ipcRenderer.invoke("edit:export", { input, segments, opts }),
   exportTimeline: (spec) => ipcRenderer.invoke("edit:exportTimeline", spec),
   exportMlt: (spec) => ipcRenderer.invoke("edit:exportMlt", spec),
   onExportProgress: (cb) => {

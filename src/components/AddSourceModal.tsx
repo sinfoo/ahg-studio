@@ -44,14 +44,20 @@ export function AddSourceModal({ onClose, onAdd, initialType }: { onClose: () =>
   }, []);
 
   useEffect(() => {
+    let live = true;
     if ((type === "display" || type === "window") && studio) {
-      studio.listSources().then((list) => setScreens(list.filter((s) => (type === "display" ? s.type === "screen" : s.type === "window"))));
+      studio.listSources().then((list) => {
+        if (live) setScreens(list.filter((s) => (type === "display" ? s.type === "screen" : s.type === "window")));
+      });
     }
     if (type === "camera") {
-      navigator.mediaDevices?.enumerateDevices().then((d) =>
-        setCams(d.filter((x) => x.kind === "videoinput").map((x, i) => ({ label: x.label || `Camera ${i + 1}`, value: x.deviceId })))
-      );
+      navigator.mediaDevices?.enumerateDevices().then((d) => {
+        if (live) setCams(d.filter((x) => x.kind === "videoinput").map((x, i) => ({ label: x.label || `Camera ${i + 1}`, value: x.deviceId })));
+      });
     }
+    return () => {
+      live = false;
+    };
   }, [type]);
 
   function pickType(t: SourceType) {
@@ -76,7 +82,7 @@ export function AddSourceModal({ onClose, onAdd, initialType }: { onClose: () =>
       : type === "image" || type === "video"
         ? !!path
         : type === "camera"
-          ? cams.length > 0
+          ? cams.length > 0 && !!sel
           : (type === "display" || type === "window") && !!sel;
 
   function add() {

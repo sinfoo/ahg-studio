@@ -362,9 +362,13 @@ function createWindow() {
   // Auto-grant screen + system audio capture with no OS picker.
   session.defaultSession.setDisplayMediaRequestHandler(
     (_request, callback) => {
-      desktopCapturer.getSources({ types: ["screen"] }).then((sources) => {
-        callback({ video: sources[0], audio: "loopback" });
-      });
+      desktopCapturer
+        .getSources({ types: ["screen"] })
+        .then((sources) => {
+          if (!sources || !sources.length) return callback({});
+          callback({ video: sources[0], audio: "loopback" });
+        })
+        .catch(() => callback({}));
     },
     { useSystemPicker: false }
   );
@@ -848,63 +852,6 @@ ipcMain.handle("edit:silence", async (_e, { input, noiseDb, minSilence }) => {
   });
 });
 
-/* ---------------- IPC: export an edit (segments → concat) ---------------- */
-ipcMain.handle("edit:export", async (_e, { input, segments, opts }) => {
-  if (!ffmpegPath || !fs.existsSync(input) || !segments || !segments.length) return { ok: false, error: "Nothing to export." };
-  const dir = path.dirname(input);
-  const base = path.basename(input).replace(/\.[^.]+$/, "");
-  const fmt = opts.format || "mp4";
-  const output = path.join(dir, sanitizeName(opts.outputName || `${base}-edited`) + "." + fmt);
-  const clamp = (n) => Math.min(2, Math.max(0.5, n || 1));
-
-  let f = "";
-  const n = segments.length;
-  segments.forEach((s, i) => {
-    const sp = clamp(s.speed);
-    f += `[0:v]trim=start=${s.start}:end=${s.end},setpts=(PTS-STARTPTS)/${sp}[v${i}];`;
-    f += `[0:a]atrim=start=${s.start}:end=${s.end},asetpts=PTS-STARTPTS${sp !== 1 ? `,atempo=${sp}` : ""}[a${i}];`;
-  });
-  f += segments.map((_, i) => `[v${i}][a${i}]`).join("") + `concat=n=${n}:v=1:a=1[vc][ac]`;
-  let vmap = "[vc]";
-  const scaleH = opts.resolution && opts.resolution !== "source" ? Number(opts.resolution) : 0;
-  if (scaleH) {
-    f += `;[vc]scale=-2:${scaleH}[vs]`;
-    vmap = "[vs]";
-  }
-  const crf = Math.round(33 - (Math.max(20, Math.min(100, opts.quality || 70)) / 100) * 23);
-  const lib = fmt === "webm" ? "libvpx-vp9" : opts.codec === "hevc" ? "libx265" : opts.codec === "av1" ? "libsvtav1" : "libx264";
-  const args = ["-y", "-i", input, "-filter_complex", f, "-map", vmap, "-map", "[ac]", "-c:v", lib];
-  if (fmt === "webm") args.push("-b:v", "0", "-crf", String(crf), "-row-mt", "1", "-c:a", "libopus", "-b:a", `${opts.audioKbps || 160}k`);
-  else {
-    args.push("-crf", String(crf), "-preset", "medium");
-    if (opts.codec === "hevc") args.push("-tag:v", "hvc1");
-    args.push("-c:a", "aac", "-b:a", `${opts.audioKbps || 160}k`);
-    if (fmt === "mp4" || fmt === "mov") args.push("-movflags", "+faststart");
-  }
-  if (opts.fps) args.push("-r", String(opts.fps));
-  args.push(output);
-
-  const total = segments.reduce((a, s) => a + (s.end - s.start) / clamp(s.speed), 0);
-  return await new Promise((resolve) => {
-    const p = spawn(ffmpegPath, ["-progress", "pipe:1", "-nostats", ...args]);
-    p.stdout.on("data", (c) => {
-      const m = String(c).match(/out_time_ms=(\d+)/g);
-      if (m && m.length) {
-        const t = parseInt(m[m.length - 1].split("=")[1], 10) / 1e6;
-        win?.webContents.send("edit:progress", total ? Math.min(0.99, t / total) : 0);
-      }
-    });
-    p.stderr.on("data", () => {});
-    p.on("close", (code) => {
-      if (code === 0 && fs.existsSync(output)) {
-        win?.webContents.send("edit:progress", 1);
-        resolve({ ok: true, output, size: fs.statSync(output).size });
-      } else resolve({ ok: false, error: `FFmpeg exited with code ${code}` });
-    });
-    p.on("error", (e) => resolve({ ok: false, error: e.message }));
-  });
-});
-
 /* ---------------- IPC: export a multi-track timeline ---------------- */
 // Map our transition kinds to ffmpeg xfade names.
 const XFADE_MAP = {
@@ -1077,7 +1024,7 @@ ipcMain.handle("edit:exportTimeline", async (_e, spec) => {
     let vlabel;
 
     // ---- main video spine (with transitions) ----
-    const spineClips = mainTrack ? sortByStart(clips.filter((c) => c.trackId === mainTrack.id && c.kind === "video")) : [];
+    const spineClips = mainTrack ? sortByStart(clips.filter((c) => c.trackId === mainTrack.id && c.kind === "video" && idxOf.has(c.id))) : [];
     if (spineClips.length) {
       spineClips.forEach((c, i) => {
         const sp = clampSpeed(c.speed);
@@ -1125,7 +1072,7 @@ ipcMain.handle("edit:exportTimeline", async (_e, spec) => {
     // ---- overlay (PiP) video tracks ----
     let ovN = 0;
     for (const t of overlayTracks) {
-      for (const c of sortByStart(clips.filter((x) => x.trackId === t.id && x.kind === "video"))) {
+      for (const c of sortByStart(clips.filter((x) => x.trackId === t.id && x.kind === "video" && idxOf.has(x.id)))) {
         const sp = clampSpeed(c.speed);
         const start = c.start;
         const end = clipEndSpec(c, lenOf);
@@ -1195,7 +1142,7 @@ ipcMain.handle("edit:exportTimeline", async (_e, spec) => {
       const box = c.bg && !c.gradient ? `:box=1:boxcolor=${hex(c.bg)}@0.85:boxborderw=${Math.round(fs2 * 0.3)}` : "";
       // Text outline (gradient fill isn't expressible in drawtext → solid color).
       const bw = c.stroke && c.stroke > 0 ? Math.max(1, Math.round((c.stroke / 1080) * H)) : 0;
-      const border = bw ? `:borderw=${bw}:bordercolor=${hex(c.strokeColor) || "black"}` : "";
+      const border = bw ? `:borderw=${bw}:bordercolor=${c.strokeColor ? hex(c.strokeColor) : "black"}` : "";
       let alpha = "1";
       if (c.anim === "fade") alpha = `if(lt(t,${start}+0.4),(t-${start})/0.4,if(gt(t,${end}-0.4),(${end}-t)/0.4,1))`;
       fc.push(
@@ -1627,7 +1574,7 @@ ipcMain.handle("compress:run", async (_e, opts) => {
   const fmt = format || "mp4";
   const name = outputName ? sanitizeName(outputName) : `${base}-optimized`;
   const output = path.join(dir, `${name}.${fmt}`);
-  const q = Math.max(20, Math.min(100, quality));
+  const q = Math.max(20, Math.min(100, quality || 70));
   const crf = Math.round(33 - (q / 100) * 23);
   const presetMap = { fast: "veryfast", balanced: "medium", max: "slow" };
   const scaleFilter = scale === "1080" ? "scale=-2:1080" : scale === "720" ? "scale=-2:720" : "";

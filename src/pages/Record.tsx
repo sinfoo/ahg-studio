@@ -52,7 +52,6 @@ export function Record({ onOptimizeLast, active = true }: { onOptimizeLast: (ref
   const [addOpen, setAddOpen] = useState(false);
   const [addType, setAddType] = useState<SourceType | undefined>(undefined);
   const [devs, setDevs] = useState<MediaDeviceInfo[]>([]);
-  const monitorRef = useRef<HTMLAudioElement | null>(null);
   const countdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -70,31 +69,6 @@ export function Record({ onOptimizeLast, active = true }: { onOptimizeLast: (ref
     setAddType(type);
     setAddOpen(true);
   }
-
-  // Live monitoring: route the mixed audio to the chosen output device.
-  useEffect(() => {
-    const el = monitorRef.current;
-    if (!el) return;
-    if (!settings.monitorEnabled) {
-      el.srcObject = null;
-      return;
-    }
-    const stream = cap.getMonitorStream();
-    el.srcObject = stream;
-    if (stream) {
-      el.volume = clamp(settings.monitorVolume, 0, 1);
-      const sink = (el as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }).setSinkId;
-      if (sink && settings.monitorDeviceId) sink.call(el, settings.monitorDeviceId).catch(() => {});
-      el.play().catch(() => {});
-    }
-  }, [settings.monitorEnabled, settings.monitorDeviceId, settings.monitorVolume, cap.audioVersion, cap.getMonitorStream]);
-
-  // Apply the monitor output volume live to the hidden <audio> element. The
-  // element's .volume is clamped to 0..1 by the platform, so the slider is 0..100%.
-  useEffect(() => {
-    const el = monitorRef.current;
-    if (el) el.volume = clamp(settings.monitorVolume, 0, 1);
-  }, [settings.monitorVolume]);
 
   function handleStartStop() {
     if (cap.recording) {
@@ -280,8 +254,6 @@ export function Record({ onOptimizeLast, active = true }: { onOptimizeLast: (ref
       </div>
 
       <AnimatePresence>{addOpen && <AddSourceModal initialType={addType} onClose={() => setAddOpen(false)} onAdd={(spec) => cap.addSource(spec)} />}</AnimatePresence>
-      {/* hidden element used to monitor the live mix on the chosen output device */}
-      <audio ref={monitorRef} className="hidden" />
     </div>
   );
 }

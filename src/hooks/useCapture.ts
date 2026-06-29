@@ -607,9 +607,6 @@ export function useCapture({ recordActive = false }: { recordActive?: boolean } 
     setSelectedId(nid);
   }
   const select = useCallback((id: string | null) => setSelectedId(id), []);
-  // Stable accessor for the live audio mix — consumers (the monitor effect on the
-  // Record page) depend on it, so its identity must not change every render.
-  const getMonitorStream = useCallback(() => mixDestRef.current?.stream ?? null, []);
 
   /* ---------------- audio ---------------- */
   useEffect(() => {
@@ -1122,7 +1119,6 @@ export function useCapture({ recordActive = false }: { recordActive?: boolean } 
     error,
     replayActive,
     audioVersion,
-    getMonitorStream,
     start,
     stop,
     stopAndWait,

@@ -115,19 +115,6 @@ export interface StudioAPI {
   ) => Promise<{ ok: boolean; ranges: { start: number; end: number }[] }>;
   filmstrip: (path: string) => Promise<{ url: string; dur: number; count: number } | null>;
   waveform: (path: string) => Promise<{ url: string; dur: number } | null>;
-  editExport: (
-    input: string,
-    segments: { start: number; end: number; speed?: number }[],
-    opts: {
-      format: string;
-      codec?: string;
-      quality?: number;
-      resolution?: string;
-      fps?: number;
-      audioKbps?: number;
-      outputName?: string;
-    }
-  ) => Promise<{ ok: boolean; output?: string; size?: number; error?: string }>;
   exportTimeline: (spec: unknown) => Promise<{ ok: boolean; output?: string; size?: number; error?: string; cancelled?: boolean }>;
   exportMlt: (spec: unknown) => Promise<{ ok: boolean; output?: string; size?: number; error?: string }>;
   onExportProgress: (cb: (pct: number) => void) => () => void;

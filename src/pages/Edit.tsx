@@ -79,7 +79,6 @@ import {
   projectDuration,
   snapCandidates,
   snapTime,
-  sourceTimeAt,
   splitClips,
   TEXT_ANIMS,
   TRANSITION_DIRS,
@@ -241,6 +240,11 @@ export function Edit({ incoming, importBatch, onOpenLibrary, active = true }: { 
   const [playing, setPlaying] = useState(false);
   const [playhead, setPlayhead] = useState(0);
   const [pxPerSec, setPxPerSec] = useState(64);
+  // Latest pxPerSec for the playback rAF's autoScroll (the tick effect doesn't
+  // depend on pxPerSec, so without this it would auto-scroll at a stale scale
+  // after a mid-playback zoom).
+  const pxPerSecRef = useRef(64);
+  pxPerSecRef.current = pxPerSec;
   const [busy, setBusy] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -329,13 +333,29 @@ export function Edit({ incoming, importBatch, onOpenLibrary, active = true }: { 
   // ---- undo / redo ----
   const undo = useRef<Project[]>([]);
   const redo = useRef<Project[]>([]);
+  // While a clip drag is in progress, commits update state WITHOUT pushing an undo
+  // snapshot — a 60fps move/trim previously pushed dozens of entries, evicting the
+  // whole 100-deep history. beginDrag() pushes exactly one snapshot of the pre-drag
+  // state, so a single Ctrl+Z reverts the entire drag.
+  const draggingRef = useRef(false);
   const commit = useCallback((next: Project | ((p: Project) => Project)) => {
     setProject((prev) => {
-      undo.current.push(prev);
-      if (undo.current.length > 100) undo.current.shift();
-      redo.current = [];
+      if (!draggingRef.current) {
+        undo.current.push(prev);
+        if (undo.current.length > 100) undo.current.shift();
+        redo.current = [];
+      }
       return typeof next === "function" ? (next as (p: Project) => Project)(prev) : next;
     });
+  }, []);
+  const beginDrag = useCallback(() => {
+    undo.current.push(projectRef.current);
+    if (undo.current.length > 100) undo.current.shift();
+    redo.current = [];
+    draggingRef.current = true;
+  }, []);
+  const endDragCommit = useCallback(() => {
+    draggingRef.current = false;
   }, []);
   // Background colour: the native <input type=color> fires onChange continuously
   // while dragging, and each full `commit` (undo push + project re-render that
@@ -559,14 +579,23 @@ export function Edit({ incoming, importBatch, onOpenLibrary, active = true }: { 
   );
   const rippleDelete = useCallback(
     (id: string) => {
-      const c = projectRef.current.clips.find((x) => x.id === id);
+      const p0 = projectRef.current;
+      const c = p0.clips.find((x) => x.id === id);
       if (!c) return;
+      // Remove the clip AND any linked partner, then close the gap on EVERY track
+      // that lost a clip (so a linked A/V pair ripples together and stays in sync).
+      const kill = withLinked(p0, [id]);
       const gap = clipLen(c);
+      const killedEndByTrack = new Map<string, number>();
+      for (const x of p0.clips) if (kill.has(x.id)) killedEndByTrack.set(x.trackId, Math.max(killedEndByTrack.get(x.trackId) ?? 0, clipEnd(x)));
       commit((p) => ({
         ...p,
         clips: p.clips
-          .filter((x) => x.id !== id)
-          .map((x) => (x.trackId === c.trackId && x.start >= clipEnd(c) - 0.001 ? { ...x, start: Math.max(0, x.start - gap) } : x)),
+          .filter((x) => !kill.has(x.id))
+          .map((x) => {
+            const end = killedEndByTrack.get(x.trackId);
+            return end != null && x.start >= end - 0.001 ? { ...x, start: Math.max(0, x.start - gap) } : x;
+          }),
       }));
       setSelId(null);
     },
@@ -574,11 +603,23 @@ export function Edit({ incoming, importBatch, onOpenLibrary, active = true }: { 
   );
   const duplicateClip = useCallback(
     (id: string) => {
-      const c = projectRef.current.clips.find((x) => x.id === id);
+      const p0 = projectRef.current;
+      const c = p0.clips.find((x) => x.id === id);
       if (!c) return;
-      const copy: Clip = { ...c, id: newId(), start: clipEnd(c) };
-      commit((p) => ({ ...p, clips: [...p.clips, copy] }));
-      setSelId(copy.id);
+      const newPrimary = newId();
+      const adds: Clip[] = [];
+      if (c.linkId) {
+        // Duplicate the WHOLE linked group as a fresh, independent pair (a new
+        // linkId) — otherwise the copy joined the original's link group and edits
+        // mirrored across all of them. Each partner's copy sits right after itself
+        // (linked A/V share start/in/out, so they stay aligned).
+        const fresh = newId("lk");
+        for (const x of p0.clips.filter((x) => x.linkId === c.linkId)) adds.push({ ...x, id: x.id === id ? newPrimary : newId(), linkId: fresh, start: clipEnd(x) });
+      } else {
+        adds.push({ ...c, id: newPrimary, start: clipEnd(c) });
+      }
+      commit((p) => ({ ...p, clips: [...p.clips, ...adds] }));
+      setSelId(newPrimary);
     },
     [commit]
   );
@@ -611,7 +652,10 @@ export function Edit({ incoming, importBatch, onOpenLibrary, active = true }: { 
           audioTrack = { id: newId("t"), kind: "audio", name: `Audio ${tracks.filter((t) => t.kind === "audio").length + 1}`, muted: false, hidden: false, locked: false };
           tracks = [...tracks, audioTrack];
         }
-        const audioClip: Clip = { ...c, id: newId(), kind: "audio", trackId: audioTrack.id, opacity: undefined };
+        // The detached audio is an INDEPENDENT clip (no linkId) — "detach" means it
+        // no longer rides with the video; sharing the video's linkId made edits
+        // mirror across them, the opposite of detaching.
+        const audioClip: Clip = { ...c, id: newId(), kind: "audio", trackId: audioTrack.id, opacity: undefined, linkId: undefined };
         const muted: Clip = { ...c, volume: 0 };
         return { ...p, tracks, clips: [...p.clips.map((x) => (x.id === c.id ? muted : x)), audioClip] };
       });
@@ -770,11 +814,13 @@ export function Edit({ incoming, importBatch, onOpenLibrary, active = true }: { 
       const ge = clamp(g.end, c.in, c.out);
       if (ge - gs <= 2 * pad) continue; // too short to cut anything after padding
       const segEnd = Math.min(gs + pad, c.out); // hold 1s into the silence
-      if (segEnd > cursor + 0.1) keep.push({ ...c, id: newId(), in: cursor, out: segEnd });
+      // Segments are standalone (linkId dropped): the linked audio partner is not
+      // cut here, so keeping the link would mirror edits and desync A/V.
+      if (segEnd > cursor + 0.1) keep.push({ ...c, id: newId(), in: cursor, out: segEnd, linkId: undefined });
       cursor = Math.max(cursor, ge - pad); // resume 1s before the next speech
       cuts++;
     }
-    if (cursor < c.out - 0.1) keep.push({ ...c, id: newId(), in: cursor, out: c.out });
+    if (cursor < c.out - 0.1) keep.push({ ...c, id: newId(), in: cursor, out: c.out, linkId: undefined });
     if (!cuts || !keep.length) {
       notify({ title: "No long silences to cut", desc: "Nothing over ~2s of quiet (with 1s buffers).", tone: "info" });
       return;
@@ -791,7 +837,6 @@ export function Edit({ incoming, importBatch, onOpenLibrary, active = true }: { 
   }
 
   // ---- markers / range ----
-  const addMarker = () => setMarkers((m) => (m.some((x) => Math.abs(x - playheadRef.current) < 0.05) ? m : [...m, playheadRef.current].sort((a, b) => a - b)));
   // Stable so the (memoized) Ruler doesn't re-render every playhead frame.
   const removeMarker = useCallback((t: number) => setMarkers((m) => m.filter((x) => x !== t)), []);
   const removeAllMarkers = useCallback(() => setMarkers([]), []);
@@ -929,7 +974,7 @@ export function Edit({ incoming, importBatch, onOpenLibrary, active = true }: { 
   function autoScroll(ph: number) {
     const el = scrollRef.current;
     if (!el) return;
-    const x = ph * pxPerSec;
+    const x = ph * pxPerSecRef.current;
     if (x < el.scrollLeft + 60 || x > el.scrollLeft + el.clientWidth - 80) el.scrollLeft = x - el.clientWidth * 0.4;
   }
 
@@ -1009,23 +1054,23 @@ export function Edit({ incoming, importBatch, onOpenLibrary, active = true }: { 
         e.preventDefault();
         duplicateClip(selId);
       } else if ((e.key === "m" || e.key === "M") && !meta) setTool("mark");
-      else if (e.key === "i" || e.key === "I") {
+      else if ((e.key === "i" || e.key === "I") && !meta) {
         // Set the export range IN point to the playhead (keeps OUT, clamped after).
         const a = playheadRef.current;
         const b = range ? Math.max(range.b, a + 0.1) : duration;
         setRange({ a, b });
-      } else if (e.key === "o" || e.key === "O") {
+      } else if ((e.key === "o" || e.key === "O") && !meta) {
         // Set the export range OUT point to the playhead (keeps IN, clamped before).
         const b = playheadRef.current;
         const a = range ? Math.min(range.a, b - 0.1) : 0;
         setRange({ a, b });
       } else if ((e.key === "x" || e.key === "X") && !meta) setRange(null);
-      else if (e.key === ",") jumpMarker(-1);
-      else if (e.key === ".") jumpMarker(1);
-      else if (e.key === "Home") seek(0);
-      else if (e.key === "End") seek(duration);
-      else if (e.key === "ArrowLeft") seek(playheadRef.current - (e.shiftKey ? 1 / project.fps : 5));
-      else if (e.key === "ArrowRight") seek(playheadRef.current + (e.shiftKey ? 1 / project.fps : 5));
+      else if (e.key === "," && !meta) jumpMarker(-1);
+      else if (e.key === "." && !meta) jumpMarker(1);
+      else if (e.key === "Home" && !meta) seek(0);
+      else if (e.key === "End" && !meta) seek(duration);
+      else if (e.key === "ArrowLeft" && !meta) seek(playheadRef.current - (e.shiftKey ? 1 / project.fps : 5));
+      else if (e.key === "ArrowRight" && !meta) seek(playheadRef.current + (e.shiftKey ? 1 / project.fps : 5));
     };
     window.addEventListener("keydown", fn);
     return () => window.removeEventListener("keydown", fn);
@@ -1184,7 +1229,6 @@ export function Edit({ incoming, importBatch, onOpenLibrary, active = true }: { 
   liveRef.current = { sel, addText, splitAtPlayhead, onLaneDragOver, onLaneDrop, duplicateClip, removeClip, rippleDelete, detachAudio, unlinkClip, removeGaps, updateClip, applyAspect, autoCutSilence, importFiles, importLastRecording };
 
   const tlHeaderW = useCallback((w: number) => setLayout((l) => ({ ...l, header: clamp(w, 92, 280) })), []);
-  const tlTrackH = useCallback((h: number) => setLayout((l) => ({ ...l, track: clamp(h, 38, 160) })), []);
   const tlAddTextAt = useCallback((t: number) => liveRef.current.addText({ start: t }), []);
   const tlToggleLoop = useCallback(() => setLoop((v) => !v), []);
   const tlToggleSnap = useCallback(() => setSnapping((v) => !v), []);
@@ -1425,7 +1469,6 @@ export function Edit({ incoming, importBatch, onOpenLibrary, active = true }: { 
         headerW={layout.header}
         onHeaderW={tlHeaderW}
         trackH={layout.track}
-        onTrackH={tlTrackH}
         selId={selId}
         selIds={selIds}
         onToggleSelect={toggleSelect}
@@ -1468,6 +1511,8 @@ export function Edit({ incoming, importBatch, onOpenLibrary, active = true }: { 
         onSetRange={setRange}
         onRemoveMarker={removeMarker}
         onRemoveAllMarkers={removeAllMarkers}
+        onDragStartClip={beginDrag}
+        onDragEndClip={endDragCommit}
       />
 
       <AnimatePresence>{exportOpen && <ExportModal project={project} range={range} onClose={() => setExportOpen(false)} />}</AnimatePresence>
@@ -2664,7 +2709,6 @@ interface TLProps {
   headerW: number;
   onHeaderW: (w: number) => void;
   trackH: number;
-  onTrackH: (h: number) => void;
   selId: string | null;
   selIds: string[];
   onToggleSelect: (id: string) => void;
@@ -2707,6 +2751,8 @@ interface TLProps {
   onSetRange: (r: { a: number; b: number } | null) => void;
   onRemoveMarker: (t: number) => void;
   onRemoveAllMarkers: () => void;
+  onDragStartClip: () => void;
+  onDragEndClip: () => void;
 }
 
 // Subscribe to the playhead store and return the on-screen X (px). Only the leaf
@@ -2756,7 +2802,7 @@ function LanePlayhead({
 }
 
 const TimelineView = memo(function TimelineView(props: TLProps) {
-  const { project, pxPerSec, phStore, duration, height, headerW, onHeaderW, trackH, onTrackH, selId, selIds, onToggleSelect, onAddSelect, onSelectMany, onMoveMany, snapping, ripple, tool, onSetTool, onSplitAt, onAltDuplicate, onAddTextAt, onAddMarkAt, loop, onToggleLoop, onToggleSnap, onToggleRipple, markers, range, flashTrack, dropHint, scrollRef, laneWrapRef, onSelect, onSeek, onCommit, onUpdateClip, onMoveClip, onPatchTrack, onDeleteTrack, onInsertTrack, onContextAction, onSetZoom, onSnapGuide, onDragOver, onDrop, onDragLeave } = props;
+  const { project, pxPerSec, phStore, duration, height, headerW, onHeaderW, trackH, selId, selIds, onToggleSelect, onAddSelect, onSelectMany, onMoveMany, snapping, ripple, tool, onSetTool, onSplitAt, onAltDuplicate, onAddTextAt, onAddMarkAt, loop, onToggleLoop, onToggleSnap, onToggleRipple, markers, range, flashTrack, dropHint, scrollRef, laneWrapRef, onSelect, onSeek, onCommit, onUpdateClip, onMoveClip, onPatchTrack, onDeleteTrack, onInsertTrack, onContextAction, onSetZoom, onSnapGuide, onDragOver, onDrop, onDragLeave, onDragStartClip, onDragEndClip } = props;
   // Per-track heights: a track can be taller than its neighbours. rowHOf adds the
   // 4px gutter; `tops` are cumulative offsets used for all y hit-testing.
   const heightOf = (t: Track) => t.height ?? trackH;
@@ -2839,6 +2885,7 @@ const TimelineView = memo(function TimelineView(props: TLProps) {
       moved?: boolean;
       captured?: boolean;
       pointerId?: number;
+      began?: boolean; // a clip move/trim drag has started committing (one undo snapshot pushed)
     }
   >(null);
   const selIdsRef = useRef(selIds);
@@ -2961,6 +3008,12 @@ const TimelineView = memo(function TimelineView(props: TLProps) {
     }
     const c0 = d.clip0!;
     if (Math.abs(e.clientX - d.startX) > 2 || Math.abs(e.clientY - d.startY) > 2) d.moved = true;
+    // First real movement of a clip move/trim → push ONE undo snapshot and enter
+    // drag mode so the per-frame commits below don't each push their own.
+    if (d.moved && !d.began) {
+      d.began = true;
+      onDragStartClip();
+    }
     const dx = (e.clientX - d.startX) / pxPerSec;
     const snaps = snapping ? snapCandidates(project, phStore.v, d.id, markers) : [];
     const tol = 8 / pxPerSec;
@@ -3031,6 +3084,8 @@ const TimelineView = memo(function TimelineView(props: TLProps) {
       if (ripple && d.mode === "trim-r" && d.clip0) {
         const c0 = d.clip0;
         const origEnd = clipEnd(c0);
+        // Still inside the drag bracket (draggingRef true), so this folds into the
+        // single drag undo entry rather than pushing its own.
         onCommit((p) => {
           const cur = p.clips.find((c) => c.id === c0.id);
           if (!cur) return p;
@@ -3038,7 +3093,10 @@ const TimelineView = memo(function TimelineView(props: TLProps) {
           if (Math.abs(delta) < 0.001) return p;
           return { ...p, clips: p.clips.map((c) => (c.id !== c0.id && c.start >= origEnd - 0.001 ? { ...c, start: Math.max(0, c.start + delta) } : c)) };
         });
-      } else onCommit((p) => p);
+      }
+      // State was already updated live during the drag; just close the undo bracket
+      // (the old `onCommit((p) => p)` here pushed a duplicate snapshot → a dead Ctrl+Z).
+      if (d.began) onDragEndClip();
     }
   }
 
@@ -3216,7 +3274,6 @@ const TimelineView = memo(function TimelineView(props: TLProps) {
                   toolCursor={TOOL_CURSOR[tool]}
                   onClipDown={onClipDown}
                   onContext={onClipContext}
-                  onTransition={onEditTransition}
                 />
               ))}
 
@@ -3504,7 +3561,7 @@ function BowTie() {
   );
 }
 
-const ClipView = memo(function ClipView({ clip, track, pxPerSec, trackH, selected, primary, toolCursor, onPointerDownClip, onContext, onTransition }: { clip: Clip; track: Track; pxPerSec: number; trackH: number; selected: boolean; primary?: boolean; toolCursor?: string; onPointerDownClip: (e: React.PointerEvent, c: Clip, mode: "move" | "trim-l" | "trim-r") => void; onContext: (id: string, x: number, y: number) => void; onTransition?: (clipId: string, dir: "in" | "out", x: number, y: number) => void }) {
+const ClipView = memo(function ClipView({ clip, track, pxPerSec, trackH, selected, primary, toolCursor, onPointerDownClip, onContext }: { clip: Clip; track: Track; pxPerSec: number; trackH: number; selected: boolean; primary?: boolean; toolCursor?: string; onPointerDownClip: (e: React.PointerEvent, c: Clip, mode: "move" | "trim-l" | "trim-r") => void; onContext: (id: string, x: number, y: number) => void }) {
   const w = Math.max(10, clipLen(clip) * pxPerSec);
   const left = clip.start * pxPerSec;
   const isText = clip.kind === "text";
@@ -3667,7 +3724,6 @@ const TrackLane = memo(function TrackLane({
   toolCursor,
   onClipDown,
   onContext,
-  onTransition,
 }: {
   track: Track;
   clips: Clip[];
@@ -3681,14 +3737,13 @@ const TrackLane = memo(function TrackLane({
   toolCursor: string;
   onClipDown: (e: React.PointerEvent, c: Clip, mode: "move" | "trim-l" | "trim-r") => void;
   onContext: (id: string, x: number, y: number) => void;
-  onTransition: (clipId: string, dir: "in" | "out", x: number, y: number) => void;
 }) {
   return (
     <div className={cx("relative border-b border-line/40 transition-colors", flash && "bg-accent-soft/40")} style={{ height: rowH, padding: "2px 0", cursor: toolCursor || undefined }}>
       {track.kind === "audio" && <div className="pointer-events-none absolute inset-0 bg-[var(--bg-sunken)]/30" />}
       {track.kind === "text" && <div className="pointer-events-none absolute inset-0 bg-accent-soft/10" />}
       {clips.map((c) => (
-        <ClipView key={c.id} clip={c} track={track} pxPerSec={pxPerSec} trackH={trackH} selected={selIds.includes(c.id) || (!!c.linkId && selLinkIds.has(c.linkId))} primary={c.id === selId} toolCursor={toolCursor} onPointerDownClip={onClipDown} onContext={onContext} onTransition={onTransition} />
+        <ClipView key={c.id} clip={c} track={track} pxPerSec={pxPerSec} trackH={trackH} selected={selIds.includes(c.id) || (!!c.linkId && selLinkIds.has(c.linkId))} primary={c.id === selId} toolCursor={toolCursor} onPointerDownClip={onClipDown} onContext={onContext} />
       ))}
     </div>
   );
