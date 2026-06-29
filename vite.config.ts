@@ -1,0 +1,9 @@
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+
+export default defineConfig({
+  // Relative base so the built app loads correctly from file:// inside Electron.
+  base: "./",
+  plugins: [react()],
+  server: { port: 5180, open: true },
+});

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AHG Studio — Screen &amp; Optimize</title>
+    <!-- Fonts load non-render-blocking so the window never waits on the network to paint. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="preload"
+      as="style"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&family=Tajawal:wght@400;500;700;800;900&display=swap"
+      onload="this.onload=null;this.rel='stylesheet'"
+    />
+    <noscript>
+      <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&family=Tajawal:wght@400;500;700;800;900&display=swap"
+        rel="stylesheet"
+      />
+    </noscript>
+    <style>
+      /* Instant backdrop — painted the moment the window appears, using the SAME
+         gradient as the React splash so the splash fades in seamlessly over it
+         (no white flash, no separate-looking loader). */
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: oklch(0.14 0.014 250);
+      }
+      #boot {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: grid;
+        place-items: center;
+        background: radial-gradient(125% 125% at 50% 32%, oklch(0.205 0.022 215), oklch(0.14 0.014 250) 52%, oklch(0.105 0.01 256));
+        transition: opacity 0.35s ease;
+      }
+      #boot .ring {
+        width: 34px;
+        height: 34px;
+        border-radius: 999px;
+        border: 2px solid oklch(0.74 0.13 195 / 0.18);
+        border-top-color: oklch(0.78 0.13 195 / 0.9);
+        animation: bootspin 0.9s linear infinite;
+      }
+      @keyframes bootspin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Instant backdrop; removed by the app once the React splash has mounted. -->
+    <div id="boot"><div class="ring"></div></div>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,80 @@
+{
+  "name": "ahg-studio",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "AHG Studio — premium screen recorder, video optimizer, and multi-track video editor. Electron + React + FFmpeg.",
+  "license": "MIT",
+  "author": "tamjar.tn@outlook.com",
+  "homepage": "https://github.com/sinfoo/ahg-studio#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sinfoo/ahg-studio.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sinfoo/ahg-studio/issues"
+  },
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "electron:dev": "concurrently -k \"vite\" \"cross-env AHG_DEV=1 wait-on tcp:5180 && electron .\"",
+    "package:win": "npm run build && node scripts/package-win.mjs",
+    "dist": "vite build && electron-builder --win portable",
+    "dist:dir": "vite build && electron-builder --win --dir"
+  },
+  "dependencies": {
+    "ffmpeg-static": "^5.2.0",
+    "ffprobe-static": "^3.1.0",
+    "framer-motion": "^11.18.2",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "postcss": "^8.4.49",
+    "rcedit": "^5.0.2",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7",
+    "wait-on": "^8.0.1"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true,
+    "electron@33.4.11": true,
+    "ffmpeg-static@5.3.0": true
+  },
+  "build": {
+    "appId": "com.ahg.studio",
+    "productName": "AHG Studio",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "electron/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "**/node_modules/ffmpeg-static/**",
+      "**/node_modules/ffprobe-static/**"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ]
+    },
+    "portable": {
+      "artifactName": "AHG Studio.exe"
+    }
+  }
+}
